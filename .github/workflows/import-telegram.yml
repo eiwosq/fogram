@@ -32,5 +32,9 @@ jobs:
           git remote add telegram https://github.com/telegramdesktop/tdesktop.git
           git fetch --depth=1 telegram dev
           git merge --squash --allow-unrelated-histories FETCH_HEAD
+          # This temporary token cannot create upstream workflow files.
+          # Keep the importer itself; other workflows are restored separately.
+          git ls-files -z .github/workflows/ | xargs -0 -r git rm -q --cached --
+          git add .github/workflows/import-telegram.yml
           git commit -m "Import Telegram Desktop source snapshot"
           git push origin HEAD:main
