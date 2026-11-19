@@ -60,6 +60,30 @@ when applying security and feature updates from upstream.
 Do not use the restricted, test-only Telegram API credentials for a real
 account. Obtain your own as described in the official build documentation.
 
+## Windows build through GitHub Actions
+
+The `Build Fogram for Windows` workflow can build an x64 executable without
+requiring Visual Studio on your own PC:
+
+1. Open the repository's **Actions** tab, choose **Build Fogram for Windows**,
+   then **Run workflow**.
+2. Choose **test** API mode and **Debug** for a compilation check. The
+   automatically triggered workflow also uses this combination. A test API
+   executable **cannot sign in to normal Telegram accounts**.
+3. For a usable executable, create Telegram API credentials as described in
+   `docs/api_credentials.md`. Add `TDESKTOP_API_ID` and `TDESKTOP_API_HASH` under
+   **Settings → Secrets and variables → Actions → New repository secret**.
+   Keep the credentials out of commits and messages. Choose **real** API mode
+   and **Release** when running the workflow.
+4. After a successful run, download the seven-day **Fogram-Windows-x64-...**
+   artifact from the run page. The executable is still named `Telegram.exe`;
+   app branding has not been changed yet.
+
+Only manual workflow runs can use the real API secrets. The test build runs
+automatically when its workflow configuration changes. The executable embeds
+the API credentials used to build it, so do not distribute a personal build
+unless you intend those credentials to be used by others.
+
 ## Test the restriction policy without Telegram dependencies
 
 On a system with a C++20 compiler:
