@@ -1,0 +1,125 @@
+name: Build Fogram for Windows
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/build-fogram-windows.yml
+  workflow_dispatch:
+    inputs:
+      configuration:
+        description: Build type
+        required: true
+        type: choice
+        default: Debug
+        options:
+          - Debug
+          - Release
+      api_mode:
+        description: 'test = compile check; real = usable Telegram client'
+        required: true
+        type: choice
+        default: test
+        options:
+          - test
+          - real
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fogram-windows-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows-x64:
+    name: Windows x64 (${{ github.event_name == 'push' && 'test/Debug' || format('{0}/{1}', inputs.api_mode, inputs.configuration) }})
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 240
+    env:
+      BUILD_CONFIG: ${{ github.event_name == 'push' && 'Debug' || inputs.configuration }}
+      API_MODE: ${{ github.event_name == 'push' && 'test' || inputs.api_mode }}
+      TDESKTOP_API_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.api_mode == 'real' && secrets.TDESKTOP_API_ID || '' }}
+      TDESKTOP_API_HASH: ${{ github.event_name == 'workflow_dispatch' && inputs.api_mode == 'real' && secrets.TDESKTOP_API_HASH || '' }}
+      CARGO_INCREMENTAL: '0'
+
+    steps:
+      - name: Check credentials for usable builds
+        if: env.API_MODE == 'real'
+        shell: pwsh
+        run: |
+          if ($env:TDESKTOP_API_ID -notmatch '^\d+$') {
+            throw 'Set numeric TDESKTOP_API_ID in Settings > Secrets and variables > Actions.'
+          }
+          if ($env:TDESKTOP_API_HASH -notmatch '^[0-9a-fA-F]{32}$') {
+            throw 'Set TDESKTOP_API_HASH in Settings > Secrets and variables > Actions.'
+          }
+
+      # Telegram/build/prepare expects the checkout to have a writable parent
+      # with Libraries/ and ThirdParty/. Keep these large directories on C:.
+      - name: Prepare build directory
+        shell: cmd
+        run: |
+          mkdir "%USERPROFILE%\TBuild\Libraries"
+          mklink /D "%GITHUB_WORKSPACE%\TBuild" "%USERPROFILE%\TBuild"
+          echo TBUILD=%GITHUB_WORKSPACE%\TBuild>>%GITHUB_ENV%
+
+      - name: Checkout Fogram and submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+          persist-credentials: false
+          path: TBuild/fogram
+
+      - name: Use Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Check free disk space
+        shell: pwsh
+        run: |
+          Write-Host ('C: {0:N1} GiB free' -f ((Get-PSDrive C).Free / 1GB))
+          Write-Host ('D: {0:N1} GiB free' -f ((Get-PSDrive D).Free / 1GB))
+
+      - name: Build Telegram Desktop with Fogram restrictions
+        shell: cmd
+        working-directory: ${{ env.TBUILD }}\fogram
+        run: |
+          @echo off
+          call "%ProgramFiles%\Microsoft Visual Studio\18\Enterprise\VC\Auxiliary\Build\vcvars64.bat" -vcvars_ver=14.44
+          if errorlevel 1 exit /b 1
+
+          cl /nologo /std:c++20 /W4 /WX /EHsc /I Telegram\SourceFiles Telegram\Tests\channel_guard_policy_test.cpp /Fe:"%RUNNER_TEMP%\fogram_policy_test.exe"
+          if errorlevel 1 exit /b 1
+          "%RUNNER_TEMP%\fogram_policy_test.exe"
+          if errorlevel 1 exit /b 1
+
+          if /I "%BUILD_CONFIG%"=="Debug" (
+            call Telegram\build\prepare\win.bat skip-release
+          ) else (
+            call Telegram\build\prepare\win.bat
+          )
+          if errorlevel 1 exit /b 1
+
+          if /I "%API_MODE%"=="real" (
+            call configure_fork_windows.cmd -D CMAKE_CONFIGURATION_TYPES=%BUILD_CONFIG% -D CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=
+          ) else (
+            pushd Telegram
+            call configure.bat x64 -D TDESKTOP_API_TEST=ON -D CMAKE_CONFIGURATION_TYPES=%BUILD_CONFIG% -D CMAKE_MSVC_DEBUG_INFORMATION_FORMAT= -D DESKTOP_APP_DISABLE_AUTOUPDATE=ON -D DESKTOP_APP_ENABLE_LTO=OFF
+            if errorlevel 1 exit /b 1
+            popd
+          )
+          if errorlevel 1 exit /b 1
+
+          cmake --build out --config %BUILD_CONFIG% --target Telegram --parallel 2
+          if errorlevel 1 exit /b 1
+
+      - name: Upload executable for download
+        uses: actions/upload-artifact@v4
+        with:
+          name: Fogram-Windows-x64-${{ env.API_MODE }}-${{ env.BUILD_CONFIG }}
+          path: ${{ env.TBUILD }}\fogram\out\${{ env.BUILD_CONFIG }}\Telegram.exe
+          if-no-files-found: error
+          retention-days: 7
