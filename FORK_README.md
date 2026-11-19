@@ -32,14 +32,15 @@ The policy is implemented in `core/channel_guard.h` and
 This repository contains **source code**, not a prebuilt or independently
 verified Windows executable. A Windows build has not been tested yet.
 
-1. Extract the ZIP. The included `.git` directory contains a separate branch
-   named `feature/unjoined-chat-restrictions`.
+1. Clone this fork using `git clone --recursive https://github.com/eiwosq/fogram.git`
+   and enter the `fogram` directory. The default `main` branch contains
+   both restrictions.
 2. Follow the official instructions in `docs/building-win.md` for Visual
-   Studio and other prerequisites, but **do not clone another copy** of
-   Telegram Desktop: use this extracted repository instead.
+   Studio and other prerequisites. Use this clone instead of creating another
+   copy of Telegram Desktop.
 3. Initialize the corresponding Visual Studio x64 developer terminal and run
-   `git submodule update --init --recursive` from the extracted `tdesktop`
-   directory. Next, run `Telegram\build\prepare\win.bat` to prepare libraries.
+   `git submodule update --init --recursive` from the `fogram` directory.
+   Next, run `Telegram\build\prepare\win.bat` to prepare libraries.
 4. Set your own Telegram API credentials in that terminal (do not commit them):
 
    ```bat
