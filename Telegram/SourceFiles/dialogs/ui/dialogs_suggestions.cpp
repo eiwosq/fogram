@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "dialogs/ui/dialogs_suggestions.h"
+#include "core/channel_guard.h"
 
 #include "api/api_chat_participants.h"
 #include "api/api_peer_search.h"
@@ -2696,7 +2697,9 @@ void Suggestions::requestChannelsSearch() {
 			};
 		};
 		_joinedChannelsResults = FilterPeers(result.my, channels(true));
-		_globalChannelsResults = FilterPeers(result.peers, channels(false));
+		_globalChannelsResults = Window::ChannelGuard::ChannelsEnabled()
+			? std::vector<not_null<PeerData*>>()
+			: FilterPeers(result.peers, channels(false));
 		const auto posts = _channelsPosts.get();
 		if (!posts->offset && !posts->loaded) {
 			requestSearchList(posts);
@@ -2749,6 +2752,13 @@ void Suggestions::requestAppsSearch() {
 
 void Suggestions::requestSearchList(not_null<SearchList*> search) {
 	if (search->requestId || search->loaded || search->query.isEmpty()) {
+		return;
+	}
+	if (search->key.tab == Tab::Channels
+		&& Window::ChannelGuard::ChannelsEnabled()) {
+		search->loaded = true;
+		_channelsLoading = false;
+		_channelsHasPosts = false;
 		return;
 	}
 	const auto query = search->query;

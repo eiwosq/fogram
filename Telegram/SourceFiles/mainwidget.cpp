@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mainwidget.h"
+#include "core/channel_guard.h"
 
 #include "api/api_updates.h"
 #include "api/api_views.h"
@@ -53,6 +54,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "chat_helpers/tabbed_selector.h" // TabbedSelector::refreshStickers
 #include "chat_helpers/message_field.h"
 #include "info/info_memento.h"
+#include "info/info_content_widget.h"
 #include "apiwrap.h"
 #include "dialogs/dialogs_widget.h"
 #include "history/history_widget.h"
@@ -1462,6 +1464,10 @@ void MainWidget::showHistory(
 				showAtMsgId = -showAtMsgId;
 			}
 		}
+		if (Window::ChannelGuard::Blocks(peer)) {
+			_controller->showToast(u"Channel or group blocked by your settings"_q);
+			return;
+		}
 		const auto unavailable = peer->computeUnavailableReason();
 		if (!unavailable.isEmpty()) {
 			if (!isPrimary()) {
@@ -1772,6 +1778,10 @@ bool MainWidget::handleDrawToReplyRequest(Data::DrawToReplyRequest request) {
 void MainWidget::showMessage(
 		not_null<const HistoryItem*> item,
 		const SectionShow &params) {
+	if (Window::ChannelGuard::Blocks(item->history()->peer)) {
+		_controller->showToast(u"Channel or group blocked by your settings"_q);
+		return;
+	}
 	const auto peerId = item->history()->peer->id;
 	const auto itemId = item->id;
 	if (!v::is_null(params.origin)) {
@@ -1881,6 +1891,20 @@ bool MainWidget::saveSectionInStack(
 void MainWidget::showSection(
 		std::shared_ptr<Window::SectionMemento> memento,
 		const SectionShow &params) {
+	const auto peer = [&]() -> PeerData* {
+		if (const auto chat = dynamic_cast<HistoryView::ChatMemento*>(
+				memento.get())) {
+			return chat->id().history->peer;
+		}
+		if (const auto info = dynamic_cast<Info::Memento*>(memento.get())) {
+			return info->stackSize() ? info->content()->peer() : nullptr;
+		}
+		return nullptr;
+	}();
+	if (Window::ChannelGuard::Blocks(peer)) {
+		_controller->showToast(u"Channel or group blocked by your settings"_q);
+		return;
+	}
 	if (_mainSection && _mainSection->showInternal(
 			memento.get(),
 			params)) {

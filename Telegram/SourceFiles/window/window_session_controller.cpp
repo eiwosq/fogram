@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "window/window_session_controller.h"
+#include "core/channel_guard.h"
 
 #include "apiwrap.h"
 #include "api/api_cloud_password.h"
@@ -135,6 +136,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_layers.h" // st::boxLabel
 
 namespace Window {
+namespace ChannelGuard {
+
+const char kOptionBlockUnjoinedChannels[] = "block-unjoined-channels";
+const char kOptionBlockUnjoinedGroups[] = "block-unjoined-groups";
+
+} // namespace ChannelGuard
 namespace {
 
 constexpr auto kCustomThemesInMemory = 5;
@@ -144,6 +151,21 @@ base::options::toggle OptionExternalMediaViewer({
 	.id = kOptionExternalMediaViewer,
 	.name = "External media viewer",
 	.description = "Use system media viewer instead of the internal one.",
+});
+
+base::options::toggle OptionBlockUnjoinedChannels({
+	.id = ChannelGuard::kOptionBlockUnjoinedChannels,
+	.name = "Block channels I haven't joined",
+	.description = "Hide unjoined channels from search and block opening "
+		"them from links, forwards and other places. Joined channels remain accessible.",
+});
+
+base::options::toggle OptionBlockUnjoinedGroups({
+	.id = ChannelGuard::kOptionBlockUnjoinedGroups,
+	.name = "Block groups I haven't joined",
+	.description = "Hide unjoined groups and supergroups from search and block "
+		"opening them from links, forwards and other places. Joined groups "
+		"and all users remain accessible.",
 });
 
 [[nodiscard]] bool HasSavingRestriction(HistoryItem *item) {
@@ -330,6 +352,39 @@ void MainWindowShow::processChosenSticker(
 }
 
 } // namespace
+
+namespace ChannelGuard {
+
+bool ChannelsEnabled() {
+	return OptionBlockUnjoinedChannels.value();
+}
+
+bool GroupsEnabled() {
+	return OptionBlockUnjoinedGroups.value();
+}
+
+bool Blocks(const PeerData *peer) {
+	if (!peer) {
+		return false;
+	}
+	if (const auto channel = peer->asChannel()) {
+		return ShouldBlock(
+			channel->isMegagroup() ? ChatKind::Group : ChatKind::Channel,
+			channel->amIn(),
+			ChannelsEnabled(),
+			GroupsEnabled());
+	}
+	if (const auto group = peer->asChat()) {
+		return ShouldBlock(
+			ChatKind::Group,
+			group->amIn(),
+			ChannelsEnabled(),
+			GroupsEnabled());
+	}
+	return false;
+}
+
+} // namespace ChannelGuard
 
 const char kOptionExternalMediaViewer[] = "external-media-viewer";
 
@@ -660,6 +715,10 @@ void SessionNavigation::resolveChannelById(
 void SessionNavigation::showMessageByLinkResolved(
 		not_null<HistoryItem*> item,
 		const PeerByLinkInfo &info) {
+	if (ChannelGuard::Blocks(item->history()->peer)) {
+		parentController()->showToast(u"Channel or group blocked by your settings"_q);
+		return;
+	}
 	auto params = SectionShow{
 		SectionShow::Way::Forward
 	};
@@ -716,6 +775,10 @@ void OpenPeerWithSidebar(
 void SessionNavigation::showPeerByLinkResolved(
 		not_null<PeerData*> peer,
 		const PeerByLinkInfo &info) {
+	if (ChannelGuard::Blocks(peer)) {
+		parentController()->showToast(u"Channel or group blocked by your settings"_q);
+		return;
+	}
 	auto params = SectionShow{
 		SectionShow::Way::Forward
 	};
@@ -1381,6 +1444,10 @@ void SessionNavigation::showRepliesForMessage(
 		MsgId rootId,
 		MsgId commentId,
 		const SectionShow &params) {
+	if (ChannelGuard::Blocks(history->peer)) {
+		parentController()->showToast(u"Channel or group blocked by your settings"_q);
+		return;
+	}
 	if (const auto topic = history->peer->forumTopicFor(rootId)) {
 		auto replies = topic->replies();
 		if (replies->unreadCountKnown()) {
@@ -1545,6 +1612,10 @@ void SessionNavigation::showThread(
 void SessionNavigation::showPeerInfo(
 		not_null<PeerData*> peer,
 		const SectionShow &params) {
+	if (ChannelGuard::Blocks(peer)) {
+		parentController()->showToast(u"Channel or group blocked by your settings"_q);
+		return;
+	}
 	//if (Adaptive::ThreeColumn()
 	//	&& !Core::App().settings().thirdSectionInfoEnabled()) {
 	//	Core::App().settings().setThirdSectionInfoEnabled(true);
@@ -2300,6 +2371,10 @@ bool SessionController::openCommunityInDifferentWindow(
 }
 
 void SessionController::openCommunity(not_null<Data::CommunityInfo*> info) {
+	if (ChannelGuard::Blocks(info->channel())) {
+		showToast(u"Channel or group blocked by your settings"_q);
+		return;
+	}
 	if (openCommunityInDifferentWindow(info)) {
 		return;
 	} else if (_openedCommunity.current() != info) {
@@ -2397,6 +2472,10 @@ void SessionController::showForum(
 		not_null<Data::Forum*> forum,
 		const SectionShow &params,
 		MsgId showAtMsgId) {
+	if (ChannelGuard::Blocks(forum->peer())) {
+		showToast(u"Channel or group blocked by your settings"_q);
+		return;
+	}
 	const auto forced = params.forceTopicsList;
 	if (showForumInDifferentWindow(forum, params, showAtMsgId)) {
 		return;
@@ -3340,6 +3419,10 @@ void SessionController::showPeerHistory(
 		const SectionShow &params,
 		MsgId msgId) {
 	if (const auto peer = session().data().peerLoaded(peerId)) {
+		if (ChannelGuard::Blocks(peer)) {
+			showToast(u"Channel or group blocked by your settings"_q);
+			return;
+		}
 		if (const auto channel = peer->asChannel()) {
 			if (channel->isCommunity()) {
 				showPeerInfo(channel, SectionShow());
@@ -4086,6 +4169,10 @@ void SessionController::openPeerStory(
 		not_null<PeerData*> peer,
 		StoryId storyId,
 		Data::StoriesContext context) {
+	if (ChannelGuard::Blocks(peer)) {
+		showToast(u"Channel or group blocked by your settings"_q);
+		return;
+	}
 	using namespace Media::View;
 	using namespace Data;
 

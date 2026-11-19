@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "dialogs/dialogs_inner_widget.h"
+#include "core/channel_guard.h"
 
 #include "dialogs/dialogs_three_state_icon.h"
 #include "dialogs/ui/chat_search_empty.h"
@@ -5024,7 +5025,8 @@ void InnerWidget::searchReceived(
 	if (inject
 		&& (globalSearch
 			|| !_searchState.inChat
-			|| inject->history() == _searchState.inChat.history())) {
+			|| inject->history() == _searchState.inChat.history())
+		&& !Window::ChannelGuard::Blocks(inject->history()->peer)) {
 		Assert(_searchResults.empty());
 		Assert(!toPreview);
 		const auto index = int(_searchResults.size());
@@ -5039,6 +5041,9 @@ void InnerWidget::searchReceived(
 	auto &results = toPreview ? _previewResults : _searchResults;
 	for (const auto &item : messages) {
 		const auto history = item->history();
+		if (Window::ChannelGuard::Blocks(history->peer)) {
+			continue;
+		}
 		if (toPreview || !uniquePeers || !hasHistoryInResults(history)) {
 			const auto index = int(results.size());
 			const auto repaint = toPreview
@@ -5054,12 +5059,16 @@ void InnerWidget::searchReceived(
 			}
 		}
 	}
+	const auto visibleCount = (Window::ChannelGuard::ChannelsEnabled()
+		|| Window::ChannelGuard::GroupsEnabled())
+		? int(results.size())
+		: fullCount;
 	if (type.migrated) {
-		_searchedMigratedCount = fullCount;
+		_searchedMigratedCount = visibleCount;
 	} else if (!withPreview || !toPreview) {
-		_searchedCount = fullCount;
+		_searchedCount = visibleCount;
 	} else {
-		_previewCount = fullCount;
+		_previewCount = visibleCount;
 	}
 
 	refresh();
@@ -5075,6 +5084,9 @@ void InnerWidget::peerSearchReceived(Api::PeerSearchResult result) {
 	_peerSearchResults.reserve(result.peers.size()
 		+ result.sponsored.size());
 	for	(const auto &peer : result.my) {
+		if (Window::ChannelGuard::Blocks(peer)) {
+			continue;
+		}
 		appendToFiltered(peer->owner().history(peer));
 	}
 	const auto inlist = [&](not_null<PeerData*> peer) {
@@ -5087,7 +5099,9 @@ void InnerWidget::peerSearchReceived(Api::PeerSearchResult result) {
 	auto added = base::flat_set<not_null<PeerData*>>();
 	for (const auto &sponsored : result.sponsored) {
 		const auto peer = sponsored.peer;
-		if (inlist(peer) || _sponsoredRemoved.contains(peer)) {
+		if (Window::ChannelGuard::Blocks(peer)
+			|| inlist(peer)
+			|| _sponsoredRemoved.contains(peer)) {
 			continue;
 		}
 		_peerSearchResults.push_back(
@@ -5099,7 +5113,9 @@ void InnerWidget::peerSearchReceived(Api::PeerSearchResult result) {
 		added.emplace(peer);
 	}
 	for (const auto &peer : result.peers) {
-		if (added.contains(peer) || inlist(peer)) {
+		if (Window::ChannelGuard::Blocks(peer)
+			|| added.contains(peer)
+			|| inlist(peer)) {
 			continue;
 		}
 		_peerSearchResults.push_back(

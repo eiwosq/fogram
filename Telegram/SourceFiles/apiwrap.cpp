@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "apiwrap.h"
+#include "core/channel_guard.h"
 
 #include "api/api_authorizations.h"
 #include "api/api_attached_stickers.h"
@@ -1923,6 +1924,9 @@ void ApiWrap::saveStickerSets(
 }
 
 void ApiWrap::joinChannel(not_null<ChannelData*> channel) {
+	if (Window::ChannelGuard::Blocks(channel)) {
+		return;
+	}
 	if (channel->amIn()) {
 		session().changes().peerUpdated(
 			channel,

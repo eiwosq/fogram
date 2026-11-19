@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "apiwrap.h"
 #include "api/api_credits.h"
 #include "boxes/premium_limits_box.h"
+#include "core/channel_guard.h"
 #include "core/application.h"
 #include "data/components/credits.h"
 #include "data/data_channel.h"
@@ -117,6 +118,14 @@ void SubmitChatInvite(
 		not_null<Main::Session*> session,
 		const QString &hash,
 		bool isGroup) {
+	if (isGroup
+		? Window::ChannelGuard::GroupsEnabled()
+		: Window::ChannelGuard::ChannelsEnabled()) {
+		if (const auto controller = weak.get()) {
+			controller->showToast(u"Channel or group blocked by your settings"_q);
+		}
+		return;
+	}
 	session->api().request(MTPmessages_ImportChatInvite(
 		MTP_string(hash)
 	)).done([=](const MTPmessages_ChatInviteJoinResult &result) {
@@ -690,6 +699,12 @@ void CheckChatInvite(
 			}
 		};
 		result.match([=](const MTPDchatInvite &data) {
+			if (data.is_broadcast()
+				? Window::ChannelGuard::ChannelsEnabled()
+				: Window::ChannelGuard::GroupsEnabled()) {
+				strong->showToast(u"Channel or group blocked by your settings"_q);
+				return;
+			}
 			const auto isGroup = !data.is_broadcast();
 			const auto hasPricing = !!data.vsubscription_pricing();
 			const auto canRefulfill = data.is_can_refulfill_subscription();

@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "api/api_global_privacy.h"
 #include "apiwrap.h"
 #include "base/call_delayed.h"
+#include "base/options.h"
 #include "base/platform/base_platform_custom_app_icon.h"
 #include "base/platform/base_platform_info.h"
 #include "base/screen_reader_state.h"
@@ -20,6 +21,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "boxes/connection_box.h"
 #include "boxes/download_path_box.h"
 #include "core/application.h"
+#include "core/channel_guard.h"
 #include "core/core_settings.h"
 #include "core/file_utilities.h"
 #include "core/launcher.h"
@@ -1302,6 +1304,45 @@ void BuildExportSection(SectionBuilder &builder) {
 	});
 }
 
+void BuildUnjoinedChatsSection(SectionBuilder &builder) {
+	builder.addDivider();
+	builder.addSkip();
+	builder.addSubsectionTitle({
+		.id = u"advanced/unjoined_chats"_q,
+		.title = rpl::single(u"Access to unjoined chats"_q),
+		.keywords = { u"channels"_q, u"groups"_q, u"block"_q },
+	});
+
+	const auto addToggle = [&](const char *id, const QString &title,
+			const QString &settingId) {
+		const auto option = &base::options::lookup<bool>(id);
+		const auto button = builder.addButton({
+			.id = settingId,
+			.title = rpl::single(title),
+			.st = &st::settingsButtonNoIcon,
+			.toggled = rpl::single(option->value()),
+			.keywords = { u"block"_q, u"search"_q, u"links"_q },
+		});
+		if (button) {
+			button->toggledValue(
+			) | rpl::filter([=](bool value) {
+				return value != option->value();
+			}) | rpl::on_next([=](bool value) {
+				option->set(value);
+			}, button->lifetime());
+		}
+	};
+	addToggle(
+		Window::ChannelGuard::kOptionBlockUnjoinedChannels,
+		u"Block channels I haven't joined"_q,
+		u"advanced/block_unjoined_channels"_q);
+	addToggle(
+		Window::ChannelGuard::kOptionBlockUnjoinedGroups,
+		u"Block groups I haven't joined"_q,
+		u"advanced/block_unjoined_groups"_q);
+	builder.addSkip();
+}
+
 void BuildScreenReaderSection(SectionBuilder &builder) {
 	const auto detected = base::ScreenReaderState::Instance()->active();
 	const auto disabled = Ui::ScreenReaderModeDisabled();
@@ -1372,6 +1413,7 @@ const auto kMeta = BuildHelper({
 	BuildWindowCloseBehaviorSection(builder);
 #endif
 	BuildSystemIntegrationSection(builder);
+	BuildUnjoinedChatsSection(builder);
 	BuildPerformanceSection(builder);
 	BuildSpellcheckerSection(builder);
 	BuildScreenReaderSection(builder);
