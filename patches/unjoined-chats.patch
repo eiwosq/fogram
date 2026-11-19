@@ -1,0 +1,728 @@
+From 992c2ee742a6ed3f35d47ee711fc1363cb7dc8c0 Mon Sep 17 00:00:00 2001
+From: ChatGPT <chatgpt@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 13:01:54 +0000
+Subject: [PATCH] Add separate restrictions for unjoined channels and groups
+
+---
+ FORK_README.md                                | 101 ++++++++++++++++++
+ Telegram/SourceFiles/api/api_chat_invite.cpp  |  15 +++
+ Telegram/SourceFiles/apiwrap.cpp              |   4 +
+ Telegram/SourceFiles/core/channel_guard.h     |  37 +++++++
+ .../dialogs/dialogs_inner_widget.cpp          |  28 +++--
+ .../dialogs/ui/dialogs_suggestions.cpp        |  12 ++-
+ Telegram/SourceFiles/mainwidget.cpp           |  24 +++++
+ .../settings/sections/settings_advanced.cpp   |  42 ++++++++
+ .../window/window_session_controller.cpp      |  87 +++++++++++++++
+ Telegram/Tests/channel_guard_policy_test.cpp  |  25 +++++
+ configure_fork_windows.cmd                    |  20 ++++
+ 11 files changed, 388 insertions(+), 7 deletions(-)
+ create mode 100644 FORK_README.md
+ create mode 100644 Telegram/SourceFiles/core/channel_guard.h
+ create mode 100644 Telegram/Tests/channel_guard_policy_test.cpp
+ create mode 100644 configure_fork_windows.cmd
+
+diff --git a/FORK_README.md b/FORK_README.md
+new file mode 100644
+index 0000000..e6da31c
+--- /dev/null
++++ b/FORK_README.md
+@@ -0,0 +1,101 @@
++# Telegram Desktop — independently configurable channel and group restrictions
++
++Based on the official [Telegram Desktop](https://github.com/telegramdesktop/tdesktop)
++source code (branch `dev`). The original project is licensed under GPLv3 with
++an OpenSSL exception; see `LEGAL`.
++
++## Features
++
++In **Settings → Advanced → Access to unjoined chats** there are two independent
++switches, initially disabled:
++
++- **Block channels I haven't joined**: hides unjoined broadcast channels from
++  search and prevents opening them through Telegram links, forwarded posts,
++  profiles, message links, stories and standard navigation.
++- **Block groups I haven't joined**: applies the same restriction to basic
++  groups and supergroups (including group forums).
++
++Unjoined channel and group invitations are also blocked while the matching
++restriction is on.
++
++Both switches leave users and bots searchable and accessible. Groups and
++channels the current account has joined remain accessible. The restrictions
++apply per account when determining whether a chat is joined, while the two
++settings themselves are client-wide.
++
++The policy is implemented in `core/channel_guard.h` and
++`window/window_session_controller.cpp`. Search result filtering is handled in
++`dialogs/dialogs_inner_widget.cpp` and `dialogs/ui/dialogs_suggestions.cpp`.
++
++## Windows build
++
++This repository contains **source code**, not a prebuilt or independently
++verified Windows executable. A Windows build has not been tested yet.
++
++1. Extract the ZIP. The included `.git` directory contains a separate branch
++   named `feature/unjoined-chat-restrictions`.
++2. Follow the official instructions in `docs/building-win.md` for Visual
++   Studio and other prerequisites, but **do not clone another copy** of
++   Telegram Desktop: use this extracted repository instead.
++3. Initialize the corresponding Visual Studio x64 developer terminal and run
++   `git submodule update --init --recursive` from the extracted `tdesktop`
++   directory. Next, run `Telegram\build\prepare\win.bat` to prepare libraries.
++4. Set your own Telegram API credentials in that terminal (do not commit them):
++
++   ```bat
++   set "TDESKTOP_API_ID=your_api_id"
++   set "TDESKTOP_API_HASH=your_api_hash"
++   ```
++
++5. Run `configure_fork_windows.cmd` from the repository root.
++6. Open `out\Telegram.slnx` in Visual Studio and build the `Telegram` project
++   in Release configuration. See `docs/building-win.md` for details.
++
++The configure script explicitly disables the official application's updater,
++which would otherwise risk replacing your modified executable with an
++unmodified Telegram Desktop release. **You will need to rebuild the fork**
++when applying security and feature updates from upstream.
++
++Do not use the restricted, test-only Telegram API credentials for a real
++account. Obtain your own as described in the official build documentation.
++
++## Test the restriction policy without Telegram dependencies
++
++On a system with a C++20 compiler:
++
++```sh
++g++ -std=c++20 -Wall -Wextra -Werror -ITelegram/SourceFiles \
++  Telegram/Tests/channel_guard_policy_test.cpp -o channel_guard_policy_test
++./channel_guard_policy_test
++```
++
++## Manual acceptance checks after building
++
++Test with each switch off/on independently, and with both on:
++
++1. Find a user not in contacts by username and open their profile.
++2. Find a bot by username and open its chat.
++3. Find and open an already-joined channel and an already-joined group.
++4. Search for an unjoined channel and an unjoined public group.
++5. Click channel and group origin names on forwarded messages.
++6. Follow `t.me/name`, `t.me/name/123`, `tg://resolve?domain=name`, and
++   `t.me/+invite_hash` links, from both Telegram and an external browser.
++7. Try group forum topics, messages, profile information and stories.
++8. Check behavior after leaving or joining a channel or group.
++9. Switch restrictions while search results and a chat view are already open.
++10. Check each account separately if multiple accounts are signed in.
++
++## Boundaries
++
++- This is a client-side interface restriction, **not a Telegram server-side
++  account restriction**. Other Telegram clients will not enforce it.
++- Webpages opened directly in a browser, including `t.me` previews, are not
++  under the desktop client's control.
++- Unjoined chat information is determined from the locally loaded membership
++  flags. Membership state and search results must be tested on a real account.
++- An already-open unjoined chat is not automatically closed when a restriction
++  is switched on. Opening it again is blocked; handling an open view requires
++  additional UI behavior.
++- A complete Windows build and manual navigation/edge-case tests are still
++  required before treating the restriction as exhaustive.
++
+diff --git a/Telegram/SourceFiles/api/api_chat_invite.cpp b/Telegram/SourceFiles/api/api_chat_invite.cpp
+index 95bd8d7..813514e 100644
+--- a/Telegram/SourceFiles/api/api_chat_invite.cpp
++++ b/Telegram/SourceFiles/api/api_chat_invite.cpp
+@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "apiwrap.h"
+ #include "api/api_credits.h"
+ #include "boxes/premium_limits_box.h"
++#include "core/channel_guard.h"
+ #include "core/application.h"
+ #include "data/components/credits.h"
+ #include "data/data_channel.h"
+@@ -117,6 +118,14 @@ void SubmitChatInvite(
+ 		not_null<Main::Session*> session,
+ 		const QString &hash,
+ 		bool isGroup) {
++	if (isGroup
++		? Window::ChannelGuard::GroupsEnabled()
++		: Window::ChannelGuard::ChannelsEnabled()) {
++		if (const auto controller = weak.get()) {
++			controller->showToast(u"Channel or group blocked by your settings"_q);
++		}
++		return;
++	}
+ 	session->api().request(MTPmessages_ImportChatInvite(
+ 		MTP_string(hash)
+ 	)).done([=](const MTPmessages_ChatInviteJoinResult &result) {
+@@ -690,6 +699,12 @@ void CheckChatInvite(
+ 			}
+ 		};
+ 		result.match([=](const MTPDchatInvite &data) {
++			if (data.is_broadcast()
++				? Window::ChannelGuard::ChannelsEnabled()
++				: Window::ChannelGuard::GroupsEnabled()) {
++				strong->showToast(u"Channel or group blocked by your settings"_q);
++				return;
++			}
+ 			const auto isGroup = !data.is_broadcast();
+ 			const auto hasPricing = !!data.vsubscription_pricing();
+ 			const auto canRefulfill = data.is_can_refulfill_subscription();
+diff --git a/Telegram/SourceFiles/apiwrap.cpp b/Telegram/SourceFiles/apiwrap.cpp
+index 0cbc7b9..0f7c6e2 100644
+--- a/Telegram/SourceFiles/apiwrap.cpp
++++ b/Telegram/SourceFiles/apiwrap.cpp
+@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
+ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ */
+ #include "apiwrap.h"
++#include "core/channel_guard.h"
+ 
+ #include "api/api_authorizations.h"
+ #include "api/api_attached_stickers.h"
+@@ -1923,6 +1924,9 @@ void ApiWrap::saveStickerSets(
+ }
+ 
+ void ApiWrap::joinChannel(not_null<ChannelData*> channel) {
++	if (Window::ChannelGuard::Blocks(channel)) {
++		return;
++	}
+ 	if (channel->amIn()) {
+ 		session().changes().peerUpdated(
+ 			channel,
+diff --git a/Telegram/SourceFiles/core/channel_guard.h b/Telegram/SourceFiles/core/channel_guard.h
+new file mode 100644
+index 0000000..8fea711
+--- /dev/null
++++ b/Telegram/SourceFiles/core/channel_guard.h
+@@ -0,0 +1,37 @@
++/*
++This file is part of Telegram Desktop.
++
++For license and copyright information please follow this link:
++https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
++*/
++#pragma once
++
++class PeerData;
++
++namespace Window::ChannelGuard {
++
++extern const char kOptionBlockUnjoinedChannels[];
++extern const char kOptionBlockUnjoinedGroups[];
++
++// Independent rules for broadcast channels and groups (including supergroups).
++// Users and bots, as well as joined chats, remain accessible.
++enum class ChatKind {
++	User,
++	Channel,
++	Group,
++};
++
++[[nodiscard]] constexpr bool ShouldBlock(
++		ChatKind kind,
++		bool joined,
++		bool blockChannels,
++		bool blockGroups) {
++	return !joined && ((kind == ChatKind::Channel && blockChannels)
++		|| (kind == ChatKind::Group && blockGroups));
++}
++
++[[nodiscard]] bool ChannelsEnabled();
++[[nodiscard]] bool GroupsEnabled();
++[[nodiscard]] bool Blocks(const PeerData *peer);
++
++} // namespace Window::ChannelGuard
+diff --git a/Telegram/SourceFiles/dialogs/dialogs_inner_widget.cpp b/Telegram/SourceFiles/dialogs/dialogs_inner_widget.cpp
+index 12006cf..3ae758e 100644
+--- a/Telegram/SourceFiles/dialogs/dialogs_inner_widget.cpp
++++ b/Telegram/SourceFiles/dialogs/dialogs_inner_widget.cpp
+@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
+ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ */
+ #include "dialogs/dialogs_inner_widget.h"
++#include "core/channel_guard.h"
+ 
+ #include "dialogs/dialogs_three_state_icon.h"
+ #include "dialogs/ui/chat_search_empty.h"
+@@ -5024,7 +5025,8 @@ void InnerWidget::searchReceived(
+ 	if (inject
+ 		&& (globalSearch
+ 			|| !_searchState.inChat
+-			|| inject->history() == _searchState.inChat.history())) {
++			|| inject->history() == _searchState.inChat.history())
++		&& !Window::ChannelGuard::Blocks(inject->history()->peer)) {
+ 		Assert(_searchResults.empty());
+ 		Assert(!toPreview);
+ 		const auto index = int(_searchResults.size());
+@@ -5039,6 +5041,9 @@ void InnerWidget::searchReceived(
+ 	auto &results = toPreview ? _previewResults : _searchResults;
+ 	for (const auto &item : messages) {
+ 		const auto history = item->history();
++		if (Window::ChannelGuard::Blocks(history->peer)) {
++			continue;
++		}
+ 		if (toPreview || !uniquePeers || !hasHistoryInResults(history)) {
+ 			const auto index = int(results.size());
+ 			const auto repaint = toPreview
+@@ -5054,12 +5059,16 @@ void InnerWidget::searchReceived(
+ 			}
+ 		}
+ 	}
++	const auto visibleCount = (Window::ChannelGuard::ChannelsEnabled()
++		|| Window::ChannelGuard::GroupsEnabled())
++		? int(results.size())
++		: fullCount;
+ 	if (type.migrated) {
+-		_searchedMigratedCount = fullCount;
++		_searchedMigratedCount = visibleCount;
+ 	} else if (!withPreview || !toPreview) {
+-		_searchedCount = fullCount;
++		_searchedCount = visibleCount;
+ 	} else {
+-		_previewCount = fullCount;
++		_previewCount = visibleCount;
+ 	}
+ 
+ 	refresh();
+@@ -5075,6 +5084,9 @@ void InnerWidget::peerSearchReceived(Api::PeerSearchResult result) {
+ 	_peerSearchResults.reserve(result.peers.size()
+ 		+ result.sponsored.size());
+ 	for	(const auto &peer : result.my) {
++		if (Window::ChannelGuard::Blocks(peer)) {
++			continue;
++		}
+ 		appendToFiltered(peer->owner().history(peer));
+ 	}
+ 	const auto inlist = [&](not_null<PeerData*> peer) {
+@@ -5087,7 +5099,9 @@ void InnerWidget::peerSearchReceived(Api::PeerSearchResult result) {
+ 	auto added = base::flat_set<not_null<PeerData*>>();
+ 	for (const auto &sponsored : result.sponsored) {
+ 		const auto peer = sponsored.peer;
+-		if (inlist(peer) || _sponsoredRemoved.contains(peer)) {
++		if (Window::ChannelGuard::Blocks(peer)
++			|| inlist(peer)
++			|| _sponsoredRemoved.contains(peer)) {
+ 			continue;
+ 		}
+ 		_peerSearchResults.push_back(
+@@ -5099,7 +5113,9 @@ void InnerWidget::peerSearchReceived(Api::PeerSearchResult result) {
+ 		added.emplace(peer);
+ 	}
+ 	for (const auto &peer : result.peers) {
+-		if (added.contains(peer) || inlist(peer)) {
++		if (Window::ChannelGuard::Blocks(peer)
++			|| added.contains(peer)
++			|| inlist(peer)) {
+ 			continue;
+ 		}
+ 		_peerSearchResults.push_back(
+diff --git a/Telegram/SourceFiles/dialogs/ui/dialogs_suggestions.cpp b/Telegram/SourceFiles/dialogs/ui/dialogs_suggestions.cpp
+index 0ce6515..8754533 100644
+--- a/Telegram/SourceFiles/dialogs/ui/dialogs_suggestions.cpp
++++ b/Telegram/SourceFiles/dialogs/ui/dialogs_suggestions.cpp
+@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
+ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ */
+ #include "dialogs/ui/dialogs_suggestions.h"
++#include "core/channel_guard.h"
+ 
+ #include "api/api_chat_participants.h"
+ #include "api/api_peer_search.h"
+@@ -2696,7 +2697,9 @@ void Suggestions::requestChannelsSearch() {
+ 			};
+ 		};
+ 		_joinedChannelsResults = FilterPeers(result.my, channels(true));
+-		_globalChannelsResults = FilterPeers(result.peers, channels(false));
++		_globalChannelsResults = Window::ChannelGuard::ChannelsEnabled()
++			? std::vector<not_null<PeerData*>>()
++			: FilterPeers(result.peers, channels(false));
+ 		const auto posts = _channelsPosts.get();
+ 		if (!posts->offset && !posts->loaded) {
+ 			requestSearchList(posts);
+@@ -2751,6 +2754,13 @@ void Suggestions::requestSearchList(not_null<SearchList*> search) {
+ 	if (search->requestId || search->loaded || search->query.isEmpty()) {
+ 		return;
+ 	}
++	if (search->key.tab == Tab::Channels
++		&& Window::ChannelGuard::ChannelsEnabled()) {
++		search->loaded = true;
++		_channelsLoading = false;
++		_channelsHasPosts = false;
++		return;
++	}
+ 	const auto query = search->query;
+ 	const auto done = crl::guard(this, [=](
+ 			const Api::GlobalMediaResult &result) {
+diff --git a/Telegram/SourceFiles/mainwidget.cpp b/Telegram/SourceFiles/mainwidget.cpp
+index 7374e83..9701a0d 100644
+--- a/Telegram/SourceFiles/mainwidget.cpp
++++ b/Telegram/SourceFiles/mainwidget.cpp
+@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
+ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ */
+ #include "mainwidget.h"
++#include "core/channel_guard.h"
+ 
+ #include "api/api_updates.h"
+ #include "api/api_views.h"
+@@ -53,6 +54,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "chat_helpers/tabbed_selector.h" // TabbedSelector::refreshStickers
+ #include "chat_helpers/message_field.h"
+ #include "info/info_memento.h"
++#include "info/info_content_widget.h"
+ #include "apiwrap.h"
+ #include "dialogs/dialogs_widget.h"
+ #include "history/history_widget.h"
+@@ -1462,6 +1464,10 @@ void MainWidget::showHistory(
+ 				showAtMsgId = -showAtMsgId;
+ 			}
+ 		}
++		if (Window::ChannelGuard::Blocks(peer)) {
++			_controller->showToast(u"Channel or group blocked by your settings"_q);
++			return;
++		}
+ 		const auto unavailable = peer->computeUnavailableReason();
+ 		if (!unavailable.isEmpty()) {
+ 			if (!isPrimary()) {
+@@ -1772,6 +1778,10 @@ bool MainWidget::handleDrawToReplyRequest(Data::DrawToReplyRequest request) {
+ void MainWidget::showMessage(
+ 		not_null<const HistoryItem*> item,
+ 		const SectionShow &params) {
++	if (Window::ChannelGuard::Blocks(item->history()->peer)) {
++		_controller->showToast(u"Channel or group blocked by your settings"_q);
++		return;
++	}
+ 	const auto peerId = item->history()->peer->id;
+ 	const auto itemId = item->id;
+ 	if (!v::is_null(params.origin)) {
+@@ -1881,6 +1891,20 @@ bool MainWidget::saveSectionInStack(
+ void MainWidget::showSection(
+ 		std::shared_ptr<Window::SectionMemento> memento,
+ 		const SectionShow &params) {
++	const auto peer = [&]() -> PeerData* {
++		if (const auto chat = dynamic_cast<HistoryView::ChatMemento*>(
++				memento.get())) {
++			return chat->id().history->peer;
++		}
++		if (const auto info = dynamic_cast<Info::Memento*>(memento.get())) {
++			return info->stackSize() ? info->content()->peer() : nullptr;
++		}
++		return nullptr;
++	}();
++	if (Window::ChannelGuard::Blocks(peer)) {
++		_controller->showToast(u"Channel or group blocked by your settings"_q);
++		return;
++	}
+ 	if (_mainSection && _mainSection->showInternal(
+ 			memento.get(),
+ 			params)) {
+diff --git a/Telegram/SourceFiles/settings/sections/settings_advanced.cpp b/Telegram/SourceFiles/settings/sections/settings_advanced.cpp
+index 9e853d8..874fe50 100644
+--- a/Telegram/SourceFiles/settings/sections/settings_advanced.cpp
++++ b/Telegram/SourceFiles/settings/sections/settings_advanced.cpp
+@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "api/api_global_privacy.h"
+ #include "apiwrap.h"
+ #include "base/call_delayed.h"
++#include "base/options.h"
+ #include "base/platform/base_platform_custom_app_icon.h"
+ #include "base/platform/base_platform_info.h"
+ #include "base/screen_reader_state.h"
+@@ -20,6 +21,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "boxes/connection_box.h"
+ #include "boxes/download_path_box.h"
+ #include "core/application.h"
++#include "core/channel_guard.h"
+ #include "core/core_settings.h"
+ #include "core/file_utilities.h"
+ #include "core/launcher.h"
+@@ -1302,6 +1304,45 @@ void BuildExportSection(SectionBuilder &builder) {
+ 	});
+ }
+ 
++void BuildUnjoinedChatsSection(SectionBuilder &builder) {
++	builder.addDivider();
++	builder.addSkip();
++	builder.addSubsectionTitle({
++		.id = u"advanced/unjoined_chats"_q,
++		.title = rpl::single(u"Access to unjoined chats"_q),
++		.keywords = { u"channels"_q, u"groups"_q, u"block"_q },
++	});
++
++	const auto addToggle = [&](const char *id, const QString &title,
++			const QString &settingId) {
++		const auto option = &base::options::lookup<bool>(id);
++		const auto button = builder.addButton({
++			.id = settingId,
++			.title = rpl::single(title),
++			.st = &st::settingsButtonNoIcon,
++			.toggled = rpl::single(option->value()),
++			.keywords = { u"block"_q, u"search"_q, u"links"_q },
++		});
++		if (button) {
++			button->toggledValue(
++			) | rpl::filter([=](bool value) {
++				return value != option->value();
++			}) | rpl::on_next([=](bool value) {
++				option->set(value);
++			}, button->lifetime());
++		}
++	};
++	addToggle(
++		Window::ChannelGuard::kOptionBlockUnjoinedChannels,
++		u"Block channels I haven't joined"_q,
++		u"advanced/block_unjoined_channels"_q);
++	addToggle(
++		Window::ChannelGuard::kOptionBlockUnjoinedGroups,
++		u"Block groups I haven't joined"_q,
++		u"advanced/block_unjoined_groups"_q);
++	builder.addSkip();
++}
++
+ void BuildScreenReaderSection(SectionBuilder &builder) {
+ 	const auto detected = base::ScreenReaderState::Instance()->active();
+ 	const auto disabled = Ui::ScreenReaderModeDisabled();
+@@ -1372,6 +1413,7 @@ const auto kMeta = BuildHelper({
+ 	BuildWindowCloseBehaviorSection(builder);
+ #endif
+ 	BuildSystemIntegrationSection(builder);
++	BuildUnjoinedChatsSection(builder);
+ 	BuildPerformanceSection(builder);
+ 	BuildSpellcheckerSection(builder);
+ 	BuildScreenReaderSection(builder);
+diff --git a/Telegram/SourceFiles/window/window_session_controller.cpp b/Telegram/SourceFiles/window/window_session_controller.cpp
+index 8d30d55..c571fa4 100644
+--- a/Telegram/SourceFiles/window/window_session_controller.cpp
++++ b/Telegram/SourceFiles/window/window_session_controller.cpp
+@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
+ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ */
+ #include "window/window_session_controller.h"
++#include "core/channel_guard.h"
+ 
+ #include "apiwrap.h"
+ #include "api/api_cloud_password.h"
+@@ -135,6 +136,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "styles/style_layers.h" // st::boxLabel
+ 
+ namespace Window {
++namespace ChannelGuard {
++
++const char kOptionBlockUnjoinedChannels[] = "block-unjoined-channels";
++const char kOptionBlockUnjoinedGroups[] = "block-unjoined-groups";
++
++} // namespace ChannelGuard
+ namespace {
+ 
+ constexpr auto kCustomThemesInMemory = 5;
+@@ -146,6 +153,21 @@ base::options::toggle OptionExternalMediaViewer({
+ 	.description = "Use system media viewer instead of the internal one.",
+ });
+ 
++base::options::toggle OptionBlockUnjoinedChannels({
++	.id = ChannelGuard::kOptionBlockUnjoinedChannels,
++	.name = "Block channels I haven't joined",
++	.description = "Hide unjoined channels from search and block opening "
++		"them from links, forwards and other places. Joined channels remain accessible.",
++});
++
++base::options::toggle OptionBlockUnjoinedGroups({
++	.id = ChannelGuard::kOptionBlockUnjoinedGroups,
++	.name = "Block groups I haven't joined",
++	.description = "Hide unjoined groups and supergroups from search and block "
++		"opening them from links, forwards and other places. Joined groups "
++		"and all users remain accessible.",
++});
++
+ [[nodiscard]] bool HasSavingRestriction(HistoryItem *item) {
+ 	return item
+ 		&& (item->forbidsSaving()
+@@ -331,6 +353,39 @@ void MainWindowShow::processChosenSticker(
+ 
+ } // namespace
+ 
++namespace ChannelGuard {
++
++bool ChannelsEnabled() {
++	return OptionBlockUnjoinedChannels.value();
++}
++
++bool GroupsEnabled() {
++	return OptionBlockUnjoinedGroups.value();
++}
++
++bool Blocks(const PeerData *peer) {
++	if (!peer) {
++		return false;
++	}
++	if (const auto channel = peer->asChannel()) {
++		return ShouldBlock(
++			channel->isMegagroup() ? ChatKind::Group : ChatKind::Channel,
++			channel->amIn(),
++			ChannelsEnabled(),
++			GroupsEnabled());
++	}
++	if (const auto group = peer->asChat()) {
++		return ShouldBlock(
++			ChatKind::Group,
++			group->amIn(),
++			ChannelsEnabled(),
++			GroupsEnabled());
++	}
++	return false;
++}
++
++} // namespace ChannelGuard
++
+ const char kOptionExternalMediaViewer[] = "external-media-viewer";
+ 
+ void ActivateWindow(not_null<SessionController*> controller) {
+@@ -660,6 +715,10 @@ void SessionNavigation::resolveChannelById(
+ void SessionNavigation::showMessageByLinkResolved(
+ 		not_null<HistoryItem*> item,
+ 		const PeerByLinkInfo &info) {
++	if (ChannelGuard::Blocks(item->history()->peer)) {
++		parentController()->showToast(u"Channel or group blocked by your settings"_q);
++		return;
++	}
+ 	auto params = SectionShow{
+ 		SectionShow::Way::Forward
+ 	};
+@@ -716,6 +775,10 @@ void OpenPeerWithSidebar(
+ void SessionNavigation::showPeerByLinkResolved(
+ 		not_null<PeerData*> peer,
+ 		const PeerByLinkInfo &info) {
++	if (ChannelGuard::Blocks(peer)) {
++		parentController()->showToast(u"Channel or group blocked by your settings"_q);
++		return;
++	}
+ 	auto params = SectionShow{
+ 		SectionShow::Way::Forward
+ 	};
+@@ -1381,6 +1444,10 @@ void SessionNavigation::showRepliesForMessage(
+ 		MsgId rootId,
+ 		MsgId commentId,
+ 		const SectionShow &params) {
++	if (ChannelGuard::Blocks(history->peer)) {
++		parentController()->showToast(u"Channel or group blocked by your settings"_q);
++		return;
++	}
+ 	if (const auto topic = history->peer->forumTopicFor(rootId)) {
+ 		auto replies = topic->replies();
+ 		if (replies->unreadCountKnown()) {
+@@ -1545,6 +1612,10 @@ void SessionNavigation::showThread(
+ void SessionNavigation::showPeerInfo(
+ 		not_null<PeerData*> peer,
+ 		const SectionShow &params) {
++	if (ChannelGuard::Blocks(peer)) {
++		parentController()->showToast(u"Channel or group blocked by your settings"_q);
++		return;
++	}
+ 	//if (Adaptive::ThreeColumn()
+ 	//	&& !Core::App().settings().thirdSectionInfoEnabled()) {
+ 	//	Core::App().settings().setThirdSectionInfoEnabled(true);
+@@ -2300,6 +2371,10 @@ bool SessionController::openCommunityInDifferentWindow(
+ }
+ 
+ void SessionController::openCommunity(not_null<Data::CommunityInfo*> info) {
++	if (ChannelGuard::Blocks(info->channel())) {
++		showToast(u"Channel or group blocked by your settings"_q);
++		return;
++	}
+ 	if (openCommunityInDifferentWindow(info)) {
+ 		return;
+ 	} else if (_openedCommunity.current() != info) {
+@@ -2397,6 +2472,10 @@ void SessionController::showForum(
+ 		not_null<Data::Forum*> forum,
+ 		const SectionShow &params,
+ 		MsgId showAtMsgId) {
++	if (ChannelGuard::Blocks(forum->peer())) {
++		showToast(u"Channel or group blocked by your settings"_q);
++		return;
++	}
+ 	const auto forced = params.forceTopicsList;
+ 	if (showForumInDifferentWindow(forum, params, showAtMsgId)) {
+ 		return;
+@@ -3340,6 +3419,10 @@ void SessionController::showPeerHistory(
+ 		const SectionShow &params,
+ 		MsgId msgId) {
+ 	if (const auto peer = session().data().peerLoaded(peerId)) {
++		if (ChannelGuard::Blocks(peer)) {
++			showToast(u"Channel or group blocked by your settings"_q);
++			return;
++		}
+ 		if (const auto channel = peer->asChannel()) {
+ 			if (channel->isCommunity()) {
+ 				showPeerInfo(channel, SectionShow());
+@@ -4086,6 +4169,10 @@ void SessionController::openPeerStory(
+ 		not_null<PeerData*> peer,
+ 		StoryId storyId,
+ 		Data::StoriesContext context) {
++	if (ChannelGuard::Blocks(peer)) {
++		showToast(u"Channel or group blocked by your settings"_q);
++		return;
++	}
+ 	using namespace Media::View;
+ 	using namespace Data;
+ 
+diff --git a/Telegram/Tests/channel_guard_policy_test.cpp b/Telegram/Tests/channel_guard_policy_test.cpp
+new file mode 100644
+index 0000000..84b4992
+--- /dev/null
++++ b/Telegram/Tests/channel_guard_policy_test.cpp
+@@ -0,0 +1,25 @@
++/*
++Standalone policy test. Run with:
++g++ -std=c++20 -ITelegram/SourceFiles Telegram/Tests/channel_guard_policy_test.cpp -o /tmp/channel_guard_policy_test
++*/
++#include "core/channel_guard.h"
++
++#include <cassert>
++#include <initializer_list>
++
++int main() {
++	using Window::ChannelGuard::ChatKind;
++	using Window::ChannelGuard::ShouldBlock;
++
++	for (const auto joined : { false, true }) {
++		for (const auto channels : { false, true }) {
++			for (const auto groups : { false, true }) {
++				assert(!ShouldBlock(ChatKind::User, joined, channels, groups));
++				assert(ShouldBlock(ChatKind::Channel, joined, channels, groups)
++					== (!joined && channels));
++				assert(ShouldBlock(ChatKind::Group, joined, channels, groups)
++					== (!joined && groups));
++			}
++		}
++	}
++}
+diff --git a/configure_fork_windows.cmd b/configure_fork_windows.cmd
+new file mode 100644
+index 0000000..c295a74
+--- /dev/null
++++ b/configure_fork_windows.cmd
+@@ -0,0 +1,20 @@
++@echo off
++setlocal
++
++if not defined TDESKTOP_API_ID (
++    echo TDESKTOP_API_ID is missing. Set your own Telegram API ID first.
++    exit /b 1
++)
++if not defined TDESKTOP_API_HASH (
++    echo TDESKTOP_API_HASH is missing. Set your own Telegram API hash first.
++    exit /b 1
++)
++
++pushd "%~dp0Telegram" || exit /b 1
++call configure.bat x64 -D TDESKTOP_API_ID=%TDESKTOP_API_ID% -D TDESKTOP_API_HASH=%TDESKTOP_API_HASH% -D DESKTOP_APP_DISABLE_AUTOUPDATE=ON
++set "configure_result=%ERRORLEVEL%"
++popd
++
++if not "%configure_result%"=="0" exit /b %configure_result%
++
++echo Configuration ready. Build the Telegram project from out\Telegram.slnx.
+-- 
+2.52.0
+
