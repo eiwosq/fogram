@@ -1,0 +1,35 @@
+name: Initialize Fogram from Telegram Desktop
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/import-telegram.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  import:
+    if: github.repository == 'eiwosq/fogram'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Import official Telegram Desktop source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if test -f Telegram/SourceFiles/mainwidget.cpp; then
+            echo "Source has already been imported."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add telegram https://github.com/telegramdesktop/tdesktop.git
+          git fetch --depth=1 telegram dev
+          git merge --allow-unrelated-histories --no-edit FETCH_HEAD
+          git push origin HEAD:main
