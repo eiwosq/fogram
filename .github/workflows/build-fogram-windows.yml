@@ -117,7 +117,7 @@ jobs:
           if errorlevel 1 exit /b 1
 
       - name: Upload executable for download
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Fogram-Windows-x64-${{ env.API_MODE }}-${{ env.BUILD_CONFIG }}
           path: ${{ env.TBUILD }}\fogram\out\${{ env.BUILD_CONFIG }}\Telegram.exe
